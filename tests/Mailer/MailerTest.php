@@ -16,7 +16,6 @@ namespace Sonata\UserBundle\Tests\DependencyInjection;
 use FOS\UserBundle\Model\UserInterface;
 use PHPUnit\Framework\TestCase;
 use Sonata\UserBundle\Mailer\Mailer;
-use Symfony\Bundle\FrameworkBundle\Templating\EngineInterface;
 use Symfony\Component\Routing\RouterInterface;
 
 class MailerTest extends TestCase
@@ -27,9 +26,9 @@ class MailerTest extends TestCase
     private $router;
 
     /**
-     * @var EngineInterface|\PHPUnit_Framework_MockObject_MockObject
+     * @var \Twig\Environment|\PHPUnit_Framework_MockObject_MockObject
      */
-    private $templating;
+    private $twig;
 
     /**
      * @var \Swift_Mailer|\PHPUnit_Framework_MockObject_MockObject
@@ -44,15 +43,15 @@ class MailerTest extends TestCase
     /**
      * @var string
      */
-    private $template;
+    private $emailTemplate;
 
     public function setUp(): void
     {
         $this->router = $this->createMock(RouterInterface::class);
-        $this->templating = $this->createMock(EngineInterface::class);
+        $this->twig = $this->createMock(\Twig\Environment::class);
         $this->mailer = $this->createMock(\Swift_Mailer::class);
         $this->emailFrom = ['noreply@sonata-project.org'];
-        $this->template = 'foo';
+        $this->emailTemplate = 'foo';
     }
 
     public function testSendConfirmationEmailMessage(): void
@@ -68,7 +67,8 @@ class MailerTest extends TestCase
     /**
      * @dataProvider emailTemplateData
      */
-    public function testSendResettingEmailMessage($template, $subject, $body): void
+    public function testSendResettingEmailMessage($subject, $plain, $hasHtml,
+        $html, $type, $body): void
     {
         $user = $this->createMock(UserInterface::class);
         $user->expects($this->any())
@@ -83,16 +83,32 @@ class MailerTest extends TestCase
             ->with('sonata_user_admin_resetting_reset', ['token' => 'user-token'])
             ->willReturn('/foo');
 
-        $this->templating->expects($this->once())
-            ->method('render')
-            ->with('foo', ['user' => $user, 'confirmationUrl' => '/foo'])
+        $context = ['user' => $user, 'confirmationUrl' => '/foo'];
+        $map = [
+            ['subject', $context, [], true, $subject],
+            ['body_text', $context, [], true, $plain],
+            ['body_html', $context, [], true, $html],
+        ];
+        $template = $this->createMock(\Twig\Template::class);
+        $template->expects($this->any())
+            ->method('renderBlock')
+            ->will($this->returnValueMap($map));
+        $template->expects($this->once())
+            ->method('hasBlock')
+            ->with('body_html', $context)
+            ->willReturn($hasHtml);
+
+        $this->twig->expects($this->once())
+            ->method('load')
+            ->with($this->emailTemplate)
             ->willReturn($template);
 
         $this->mailer->expects($this->once())
             ->method('send')
-            ->willReturnCallback(function (\Swift_Message $message) use ($subject, $body): void {
+            ->willReturnCallback(function (\Swift_Message $message) use ($subject, $plain, $hasHtml, $html, $type, $body): void {
                 $this->assertSame($subject, $message->getSubject());
                 $this->assertSame($body, $message->getBody());
+                $this->assertSame($type, $message->getContentType());
                 $this->assertArrayHasKey($this->emailFrom[0], $message->getFrom());
                 $this->assertArrayHasKey('user@sonata-project.org', $message->getTo());
             });
@@ -103,16 +119,28 @@ class MailerTest extends TestCase
     public function emailTemplateData()
     {
         return [
-            'CR' => ["Subject\rFirst line\rSecond line", 'Subject', "First line\rSecond line"],
-            'LF' => ["Subject\nFirst line\nSecond line", 'Subject', "First line\nSecond line"],
-            'CRLF' => ["Subject\r\nFirst line\r\nSecond line", 'Subject', "First line\r\nSecond line"],
-            'LFLF' => ["Subject\n\nFirst line\n\nSecond line", 'Subject', "\nFirst line\n\nSecond line"],
-            'CRCR' => ["Subject\r\rFirst line\r\rSecond line", 'Subject', "\rFirst line\r\rSecond line"],
+            [
+                'Subject',
+                'Plain text',
+                true,
+                '<p>HTML text</p>',
+                'multipart/alternative',
+                '<p>HTML text</p>',
+            ],
+            [
+                'Subject',
+                'Plain text',
+                false,
+                '',
+                'text/plain',
+                'Plain text',
+            ],
         ];
     }
 
     private function getMailer(): Mailer
     {
-        return new Mailer($this->router, $this->templating, $this->mailer, $this->emailFrom, $this->template);
+        return new Mailer($this->router, $this->twig, $this->mailer,
+            $this->emailFrom, $this->emailTemplate);
     }
 }

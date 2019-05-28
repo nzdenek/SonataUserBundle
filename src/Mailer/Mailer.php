@@ -15,7 +15,6 @@ namespace Sonata\UserBundle\Mailer;
 
 use FOS\UserBundle\Mailer\MailerInterface;
 use FOS\UserBundle\Model\UserInterface;
-use Symfony\Bundle\FrameworkBundle\Templating\EngineInterface;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 final class Mailer implements MailerInterface
@@ -26,9 +25,9 @@ final class Mailer implements MailerInterface
     private $urlGenerator;
 
     /**
-     * @var EngineInterface
+     * @var \Twig\Environment
      */
-    private $templating;
+    private $twig;
 
     /**
      * @var \Swift_Mailer
@@ -45,10 +44,15 @@ final class Mailer implements MailerInterface
      */
     private $emailTemplate;
 
-    public function __construct(UrlGeneratorInterface $urlGenerator, EngineInterface $templating, \Swift_Mailer $mailer, array $fromEmail, string $emailTemplate)
-    {
+    public function __construct(
+        UrlGeneratorInterface $urlGenerator,
+        \Twig\Environment $twig,
+        \Swift_Mailer $mailer,
+        array $fromEmail,
+        string $emailTemplate
+    ) {
         $this->urlGenerator = $urlGenerator;
-        $this->templating = $templating;
+        $this->twig = $twig;
         $this->mailer = $mailer;
         $this->fromEmail = $fromEmail;
         $this->emailTemplate = $emailTemplate;
@@ -56,24 +60,34 @@ final class Mailer implements MailerInterface
 
     public function sendResettingEmailMessage(UserInterface $user): void
     {
-        $url = $this->urlGenerator->generate('sonata_user_admin_resetting_reset', [
+        $route = 'sonata_user_admin_resetting_reset';
+        $url = $this->urlGenerator->generate($route, [
             'token' => $user->getConfirmationToken(),
         ], UrlGeneratorInterface::ABSOLUTE_URL);
 
-        $rendered = $this->templating->render($this->emailTemplate, [
+        $context = [
             'user' => $user,
             'confirmationUrl' => $url,
-        ]);
+        ];
+        $template = $this->twig->load($this->emailTemplate);
+        $subject = $template->renderBlock('subject', $context);
+        $plainBody = $template->renderBlock('body_text', $context);
+        $htmlBody = '';
+        if ($template->hasBlock('body_html', $context)) {
+            $htmlBody = $template->renderBlock('body_html', $context);
+        }
 
-        // Render the email, use the first line as the subject, and the rest as the body
-        $renderedLines = preg_split('/\R/', trim($rendered), 2, PREG_SPLIT_NO_EMPTY);
-        $subject = array_shift($renderedLines);
-        $body = implode('', $renderedLines);
         $message = (new \Swift_Message())
             ->setSubject($subject)
             ->setFrom($this->fromEmail)
             ->setTo((string) $user->getEmail())
-            ->setBody($body);
+        ;
+        if (empty($htmlBody)) {
+            $message->setBody($plainBody);
+        } else {
+            $message->setBody($htmlBody, 'text/html');
+            $message->addPart($plainBody, 'text/plain');
+        }
 
         $this->mailer->send($message);
     }
